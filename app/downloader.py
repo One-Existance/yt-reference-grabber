@@ -30,6 +30,26 @@ def find_node():
     return shutil.which("node") is not None
 
 
+POSTPROCESSOR_LABELS = {
+    "Merger": "Merging video and audio...",
+    "FFmpegExtractAudio": "Converting to MP3...",
+    "FFmpegVideoConvertor": "Converting video...",
+    "MoveFiles": "Finalizing...",
+}
+
+
+def _stream_label(info_dict):
+    vcodec = info_dict.get("vcodec")
+    acodec = info_dict.get("acodec")
+    has_video = vcodec and vcodec != "none"
+    has_audio = acodec and acodec != "none"
+    if has_video and not has_audio:
+        return "video stream"
+    if has_audio and not has_video:
+        return "audio stream"
+    return "file"
+
+
 class Downloader:
     """Handles metadata fetch and download for a single item, reporting
     progress dict events onto self.events (a queue.Queue)."""
@@ -37,6 +57,7 @@ class Downloader:
     def __init__(self):
         self.events = queue.Queue()
         self._cancel_flag = threading.Event()
+        self._last_filepath = None
 
     def cancel(self):
         self._cancel_flag.set()
@@ -58,23 +79,38 @@ class Downloader:
         if self._cancel_flag.is_set():
             raise DownloadCancelled()
         status = d.get("status")
+        info = d.get("info_dict") or {}
         if status == "downloading":
             self.events.put({
                 "type": "progress",
+                "stream": _stream_label(info),
                 "percent_str": d.get("_percent_str", "").strip(),
                 "downloaded": d.get("downloaded_bytes", 0),
                 "total": d.get("total_bytes") or d.get("total_bytes_estimate") or 0,
                 "speed": d.get("speed"),
                 "eta": d.get("eta"),
-                "filename": d.get("filename", ""),
             })
         elif status == "finished":
-            self.events.put({"type": "converting", "filename": d.get("filename", "")})
+            self._last_filepath = d.get("filename") or self._last_filepath
+            self.events.put({"type": "stage", "message": "Processing..."})
+
+    def _postprocessor_hook(self, d):
+        status = d.get("status")
+        pp = d.get("postprocessor", "")
+        if status == "started":
+            label = POSTPROCESSOR_LABELS.get(pp, f"Running {pp}...")
+            self.events.put({"type": "stage", "message": label})
+        elif status == "finished":
+            info = d.get("info_dict") or {}
+            filepath = info.get("filepath")
+            if filepath:
+                self._last_filepath = filepath
 
     def download(self, url, output_dir, mode, quality, is_playlist):
         """mode: 'video' or 'audio'. quality: e.g. '1080', '720', 'best'
         for video, or '320', '192', '128' for audio (kbps)."""
         self._cancel_flag.clear()
+        self._last_filepath = None
         os.makedirs(output_dir, exist_ok=True)
 
         if is_playlist:
@@ -89,6 +125,7 @@ class Downloader:
             "outtmpl": outtmpl,
             "noplaylist": not is_playlist,
             "progress_hooks": [self._progress_hook],
+            "postprocessor_hooks": [self._postprocessor_hook],
             "quiet": True,
             "no_warnings": True,
             "restrictfilenames": False,
@@ -119,7 +156,12 @@ class Downloader:
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
-            self.events.put({"type": "done"})
+            self.events.put({
+                "type": "done",
+                "filepath": self._last_filepath,
+                "output_dir": output_dir,
+                "is_playlist": is_playlist,
+            })
         except DownloadCancelled:
             self.events.put({"type": "cancelled"})
         except Exception as exc:  # noqa: BLE001 - surface any yt-dlp error to the UI

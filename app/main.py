@@ -4,7 +4,6 @@ videos and audio for use as personal reference/tagging material."""
 import os
 import queue
 import subprocess
-import sys
 import threading
 import urllib.request
 from io import BytesIO
@@ -13,6 +12,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 from downloader import Downloader, find_ffmpeg, find_node
+from settings import load_settings, save_settings
 
 try:
     from PIL import Image
@@ -29,18 +29,42 @@ VIDEO_QUALITIES = [("Best available", "best"), ("1080p", "1080"), ("720p", "720"
 AUDIO_QUALITIES = [("320 kbps", "320"), ("192 kbps", "192"), ("128 kbps", "128")]
 
 
+def format_bytes(n):
+    if not n:
+        return "?"
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024:
+            return f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+def format_eta(seconds):
+    if seconds is None:
+        return "?"
+    seconds = int(seconds)
+    m, s = divmod(seconds, 60)
+    return f"{m:02d}:{s:02d}"
+
+
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("YT Reference Grabber")
-        self.geometry("760x640")
-        self.minsize(680, 560)
+        self.geometry("760x680")
+        self.minsize(680, 580)
 
         self.downloader = Downloader()
         self.current_info = None
         self.thumb_image = None
-        self.output_dir = DEFAULT_OUTPUT_DIR
+        self.settings = load_settings()
+        self.output_dir = self.settings.get("output_dir") or DEFAULT_OUTPUT_DIR
         self.is_downloading = False
+        self.progress_bar_mode = "determinate"
+
+        self.last_filepath = None
+        self.last_output_dir = None
+        self.last_is_playlist = False
 
         self._build_ui()
         self._poll_events()
@@ -107,9 +131,12 @@ class App(ctk.CTk):
         # Output folder row
         out_frame = ctk.CTkFrame(self, fg_color="transparent")
         out_frame.pack(fill="x", **pad)
-        self.out_label = ctk.CTkLabel(out_frame, text=self.output_dir, text_color="gray60", anchor="w")
+        ctk.CTkLabel(out_frame, text="Default save folder:", text_color="gray60").pack(anchor="w")
+        out_row = ctk.CTkFrame(out_frame, fg_color="transparent")
+        out_row.pack(fill="x", pady=(2, 0))
+        self.out_label = ctk.CTkLabel(out_row, text=self.output_dir, text_color="gray60", anchor="w")
         self.out_label.pack(side="left", fill="x", expand=True)
-        browse_btn = ctk.CTkButton(out_frame, text="Change folder", width=120, command=self.on_browse)
+        browse_btn = ctk.CTkButton(out_row, text="Change folder", width=120, command=self.on_browse)
         browse_btn.pack(side="right")
 
         # Download button + progress
@@ -118,14 +145,24 @@ class App(ctk.CTk):
         self.download_btn = ctk.CTkButton(action_frame, text="Download", height=40,
                                            font=ctk.CTkFont(size=14, weight="bold"),
                                            command=self.on_download)
-        self.download_btn.pack(fill="x")
+        self.download_btn.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        self.open_location_btn = ctk.CTkButton(action_frame, text="Open File Location", height=40,
+                                                width=160, state="disabled",
+                                                fg_color="gray30", hover_color="gray25",
+                                                command=self.on_open_location)
+        self.open_location_btn.pack(side="right")
 
         self.progress_bar = ctk.CTkProgressBar(self)
         self.progress_bar.set(0)
         self.progress_bar.pack(fill="x", padx=16, pady=(8, 4))
 
-        self.status_label = ctk.CTkLabel(self, text="Ready.", text_color="gray60", anchor="w")
-        self.status_label.pack(fill="x", padx=16)
+        self.stage_label = ctk.CTkLabel(self, text="Ready.", anchor="w",
+                                         font=ctk.CTkFont(size=13, weight="bold"))
+        self.stage_label.pack(fill="x", padx=16)
+
+        self.detail_label = ctk.CTkLabel(self, text="", text_color="gray60", anchor="w")
+        self.detail_label.pack(fill="x", padx=16, pady=(0, 4))
 
         # Log box
         log_frame = ctk.CTkFrame(self)
@@ -152,6 +189,9 @@ class App(ctk.CTk):
         if chosen:
             self.output_dir = chosen
             self.out_label.configure(text=self.output_dir)
+            self.settings["output_dir"] = self.output_dir
+            save_settings(self.settings)
+            self.log(f"Default save folder set to {self.output_dir}")
 
     def _warn_missing_deps(self):
         missing = []
@@ -166,6 +206,19 @@ class App(ctk.CTk):
             "installed one, restart this app so the updated PATH takes effect."
         )
 
+    def _set_progress_determinate(self, fraction):
+        if self.progress_bar_mode != "determinate":
+            self.progress_bar.stop()
+            self.progress_bar.configure(mode="determinate")
+            self.progress_bar_mode = "determinate"
+        self.progress_bar.set(fraction)
+
+    def _set_progress_indeterminate(self):
+        if self.progress_bar_mode != "indeterminate":
+            self.progress_bar.configure(mode="indeterminate")
+            self.progress_bar.start()
+            self.progress_bar_mode = "indeterminate"
+
     # ---------- fetch info ----------
 
     def on_fetch(self):
@@ -173,7 +226,8 @@ class App(ctk.CTk):
         if not url:
             return
         self.fetch_btn.configure(state="disabled", text="Loading...")
-        self.status_label.configure(text="Fetching video info...")
+        self.stage_label.configure(text="Fetching video info...")
+        self.detail_label.configure(text="")
         threading.Thread(target=self._fetch_worker, args=(url,), daemon=True).start()
 
     def _fetch_worker(self, url):
@@ -186,14 +240,14 @@ class App(ctk.CTk):
 
     def _fetch_failed(self, message):
         self.fetch_btn.configure(state="normal", text="Fetch")
-        self.status_label.configure(text="Failed to fetch info.")
+        self.stage_label.configure(text="Failed to fetch info.")
         self.log(f"Error: {message}")
         messagebox.showerror("Couldn't load video", message)
 
     def _fetch_done(self, info):
         self.current_info = info
         self.fetch_btn.configure(state="normal", text="Fetch")
-        self.status_label.configure(text="Ready.")
+        self.stage_label.configure(text="Ready.")
 
         is_playlist = info.get("_type") == "playlist" or "entries" in info
         if is_playlist:
@@ -269,9 +323,11 @@ class App(ctk.CTk):
         is_playlist = self.playlist_var.get()
 
         self.is_downloading = True
+        self.open_location_btn.configure(state="disabled")
         self.download_btn.configure(state="disabled", text="Downloading...")
-        self.progress_bar.set(0)
-        self.status_label.configure(text="Starting download...")
+        self._set_progress_determinate(0)
+        self.stage_label.configure(text="Starting download...")
+        self.detail_label.configure(text="")
         self.log(f"Downloading ({mode}, {quality_label})...")
 
         threading.Thread(
@@ -279,6 +335,14 @@ class App(ctk.CTk):
             args=(url, self.output_dir, mode, quality, is_playlist),
             daemon=True,
         ).start()
+
+    def on_open_location(self):
+        if self.last_filepath and os.path.isfile(self.last_filepath):
+            subprocess.run(["explorer", f"/select,{self.last_filepath}"])
+        elif self.last_output_dir and os.path.isdir(self.last_output_dir):
+            os.startfile(self.last_output_dir)
+        else:
+            messagebox.showinfo("Not available", "No completed download to show yet.")
 
     def _poll_events(self):
         try:
@@ -294,29 +358,54 @@ class App(ctk.CTk):
         if etype == "progress":
             total = event.get("total") or 0
             downloaded = event.get("downloaded") or 0
-            if total:
-                self.progress_bar.set(min(downloaded / total, 1.0))
-            speed = event.get("speed")
-            speed_str = f"{speed / 1024 / 1024:.1f} MB/s" if speed else ""
+            stream = event.get("stream", "file")
             pct = event.get("percent_str") or ""
-            self.status_label.configure(text=f"Downloading... {pct} {speed_str}".strip())
-        elif etype == "converting":
-            self.status_label.configure(text="Converting / merging...")
-            self.progress_bar.set(1.0)
+            speed = event.get("speed")
+            speed_str = f"{format_bytes(speed)}/s" if speed else "?/s"
+            eta_str = format_eta(event.get("eta"))
+
+            if total:
+                self._set_progress_determinate(min(downloaded / total, 1.0))
+            else:
+                self._set_progress_indeterminate()
+
+            self.stage_label.configure(text=f"Downloading {stream}... {pct}".strip())
+            self.detail_label.configure(
+                text=f"{format_bytes(downloaded)} / {format_bytes(total)}  •  {speed_str}  •  ETA {eta_str}"
+            )
+        elif etype == "stage":
+            self._set_progress_indeterminate()
+            self.stage_label.configure(text=event.get("message", "Processing..."))
+            self.detail_label.configure(text="")
         elif etype == "done":
             self.is_downloading = False
             self.download_btn.configure(state="normal", text="Download")
-            self.status_label.configure(text="Done.")
-            self.progress_bar.set(1.0)
-            self.log(f"Saved to {self.output_dir}")
+            self._set_progress_determinate(1.0)
+            self.stage_label.configure(text="Done.")
+
+            self.last_filepath = event.get("filepath")
+            self.last_output_dir = event.get("output_dir")
+            self.last_is_playlist = event.get("is_playlist", False)
+            self.open_location_btn.configure(state="normal")
+
+            if self.last_filepath:
+                self.detail_label.configure(text=os.path.basename(self.last_filepath))
+                self.log(f"Saved: {self.last_filepath}")
+            else:
+                self.detail_label.configure(text=self.last_output_dir or "")
+                self.log(f"Saved to {self.last_output_dir}")
         elif etype == "cancelled":
             self.is_downloading = False
             self.download_btn.configure(state="normal", text="Download")
-            self.status_label.configure(text="Cancelled.")
+            self._set_progress_determinate(0)
+            self.stage_label.configure(text="Cancelled.")
+            self.detail_label.configure(text="")
         elif etype == "error":
             self.is_downloading = False
             self.download_btn.configure(state="normal", text="Download")
-            self.status_label.configure(text="Error.")
+            self._set_progress_determinate(0)
+            self.stage_label.configure(text="Error.")
+            self.detail_label.configure(text="")
             self.log(f"Error: {event.get('message')}")
             messagebox.showerror("Download failed", event.get("message", "Unknown error"))
 
