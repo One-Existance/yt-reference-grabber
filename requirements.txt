@@ -1,4 +1,6 @@
 customtkinter
+# YouTube changes frequently break older yt-dlp releases; prefer the nightly
+# build for faster fixes: pip install -U --pre yt-dlp
 yt-dlp
 pillow
 pyinstaller

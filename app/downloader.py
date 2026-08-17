@@ -21,6 +21,15 @@ def find_ffmpeg():
     return None
 
 
+def find_node():
+    """Return True if a node.js runtime is available on PATH.
+
+    YouTube requires solving a JS "n challenge" to get working download
+    URLs; yt-dlp needs a JS runtime (node) for this, plus permission to
+    fetch its challenge-solver script (see remote_components below)."""
+    return shutil.which("node") is not None
+
+
 class Downloader:
     """Handles metadata fetch and download for a single item, reporting
     progress dict events onto self.events (a queue.Queue)."""
@@ -38,6 +47,8 @@ class Downloader:
             "no_warnings": True,
             "skip_download": True,
             "extract_flat": "in_playlist",
+            "js_runtimes": {"deno": {}, "node": {}},
+            "remote_components": ["ejs:github"],
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -83,6 +94,8 @@ class Downloader:
             "restrictfilenames": False,
             "windowsfilenames": True,
             "ignoreerrors": is_playlist,
+            "js_runtimes": {"deno": {}, "node": {}},
+            "remote_components": ["ejs:github"],
         }
         if ffmpeg_dir:
             opts["ffmpeg_location"] = ffmpeg_dir

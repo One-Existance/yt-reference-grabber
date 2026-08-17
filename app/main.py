@@ -12,7 +12,7 @@ from io import BytesIO
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
-from downloader import Downloader, find_ffmpeg
+from downloader import Downloader, find_ffmpeg, find_node
 
 try:
     from PIL import Image
@@ -45,8 +45,8 @@ class App(ctk.CTk):
         self._build_ui()
         self._poll_events()
 
-        if not find_ffmpeg():
-            self.after(300, self._warn_no_ffmpeg)
+        if not find_ffmpeg() or not find_node():
+            self.after(300, self._warn_missing_deps)
 
     # ---------- UI construction ----------
 
@@ -153,12 +153,17 @@ class App(ctk.CTk):
             self.output_dir = chosen
             self.out_label.configure(text=self.output_dir)
 
-    def _warn_no_ffmpeg(self):
+    def _warn_missing_deps(self):
+        missing = []
+        if not find_ffmpeg():
+            missing.append("FFmpeg (needed to merge video/audio and convert to MP3)")
+        if not find_node():
+            missing.append("Node.js (needed to solve YouTube's JS challenge)")
         messagebox.showwarning(
-            "FFmpeg not detected",
-            "FFmpeg wasn't found on your PATH. Merging video/audio and "
-            "converting to MP3 will fail without it. If you just installed "
-            "it, restart this app (or your PC) so the updated PATH takes effect."
+            "Missing dependency",
+            "Not found on your PATH:\n\n- " + "\n- ".join(missing) +
+            "\n\nDownloads will likely fail without these. If you just "
+            "installed one, restart this app so the updated PATH takes effect."
         )
 
     # ---------- fetch info ----------
@@ -253,8 +258,8 @@ class App(ctk.CTk):
         if not url:
             messagebox.showinfo("No URL", "Paste a YouTube URL first.")
             return
-        if not find_ffmpeg():
-            self._warn_no_ffmpeg()
+        if not find_ffmpeg() or not find_node():
+            self._warn_missing_deps()
             return
 
         mode = self.mode_var.get()

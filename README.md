@@ -20,6 +20,25 @@ shortcut). No Python install needed on this PC — everything is bundled.
 - FFmpeg must be installed and on PATH (already set up on this machine via
   `winget install Gyan.FFmpeg`) — it's used to merge video+audio streams and
   to convert audio to MP3.
+- Node.js must be installed and on PATH (already set up via
+  `winget install OpenJS.NodeJS`, or was present already) — yt-dlp uses it
+  to solve YouTube's JavaScript "n challenge" that gates download URLs.
+
+## Troubleshooting: downloads fail with 403 Forbidden / "DRM protected"
+
+YouTube periodically changes how it gates video URLs, and `yt-dlp` has to
+keep up. If downloads start failing:
+
+1. Update to the latest `yt-dlp` nightly build (fixes for YouTube breakage
+   usually land here first, days before a stable PyPI release):
+   ```
+   venv\Scripts\python.exe -m pip install -U --pre yt-dlp
+   ```
+2. Make sure Node.js is installed (see Requirements above) — `downloader.py`
+   passes `js_runtimes: {"deno": {}, "node": {}}` and
+   `remote_components: ["ejs:github"]` to yt-dlp so it can fetch and run the
+   JS challenge solver it needs against current YouTube pages.
+3. Rebuild the exe (see below) so the fix is baked into the packaged app.
 
 ## Developing / rebuilding
 
