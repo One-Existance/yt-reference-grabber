@@ -3,7 +3,6 @@ videos and audio for use as personal reference/tagging material."""
 
 import os
 import queue
-import subprocess
 import threading
 import urllib.request
 from io import BytesIO
@@ -12,6 +11,7 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox
 
 from downloader import Downloader, find_ffmpeg, find_node
+from os_utils import reveal_in_explorer
 from settings import load_settings, save_settings
 
 try:
@@ -338,7 +338,7 @@ class App(ctk.CTk):
 
     def on_open_location(self):
         if self.last_filepath and os.path.isfile(self.last_filepath):
-            subprocess.run(["explorer", f"/select,{self.last_filepath}"])
+            reveal_in_explorer(self.last_filepath)
         elif self.last_output_dir and os.path.isdir(self.last_output_dir):
             os.startfile(self.last_output_dir)
         else:
