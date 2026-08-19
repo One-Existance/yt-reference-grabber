@@ -55,7 +55,38 @@ To rebuild the standalone exe after code changes:
 venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --windowed --name "YT Reference Grabber" --collect-all customtkinter --paths app app/main.py
 ```
 
-The output lands in `dist\YT Reference Grabber.exe`.
+The output lands in `dist\YT Reference Grabber.exe`. This build still
+requires FFmpeg and Node.js to be separately installed on whatever PC runs
+it (see Requirements above) — fine for this machine, but not something to
+hand to someone else as-is.
+
+## Building a portable copy to share with someone else
+
+For a build that works on a PC with nothing pre-installed, bundle FFmpeg and
+Node.js alongside the app instead of relying on PATH:
+
+1. Create a `bin\` folder in the project root and copy in three binaries:
+   - `ffmpeg.exe` and `ffprobe.exe` from the FFmpeg **Essentials** build
+     (`winget install Gyan.FFmpeg.Essentials` — the "full" build works too
+     but is over 2x the size for no benefit here)
+   - `node.exe` from a Node.js install (e.g. `C:\Program Files\nodejs\node.exe`)
+2. Build in `--onedir` mode with those binaries attached:
+   ```
+   venv\Scripts\python.exe -m PyInstaller --noconfirm --onedir --windowed --name "YT Reference Grabber" --collect-all customtkinter --paths app --distpath dist_bundle --add-binary "bin/ffmpeg.exe;bin" --add-binary "bin/ffprobe.exe;bin" --add-binary "bin/node.exe;bin" app/main.py
+   ```
+   (`--onedir`, not `--onefile` - onefile builds extract to a temp folder on
+   every launch, which would mean silently re-extracting ~300MB each run.)
+3. Zip the `dist_bundle\YT Reference Grabber` folder. The recipient unzips
+   it anywhere and runs `YT Reference Grabber.exe` inside - no installs
+   required.
+
+`downloader.py`'s `find_ffmpeg()` / `find_node()` check for this bundled
+`bin\` folder first (resolved via `sys._MEIPASS` when frozen, since
+PyInstaller's onedir layout puts bundled data under `_internal\`, not next
+to the exe) and only fall back to PATH if it's absent - so the same source
+tree produces both a lightweight PATH-dependent build and a fully
+self-contained one, and it's verified to work with FFmpeg/Node absent from
+PATH entirely.
 
 ## A note on usage
 

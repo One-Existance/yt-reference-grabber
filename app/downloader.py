@@ -4,6 +4,7 @@ progress back to the GUI through a thread-safe queue."""
 import os
 import queue
 import shutil
+import sys
 import threading
 
 import yt_dlp
@@ -13,21 +14,50 @@ class DownloadCancelled(Exception):
     pass
 
 
+def _bundled_bin_dir():
+    """Directory containing ffmpeg/node binaries bundled alongside the app
+    for standalone distribution, if present (see README packaging notes)."""
+    if getattr(sys, "frozen", False):
+        # _MEIPASS is where PyInstaller places bundled data files - for
+        # --onedir builds that's the _internal/ folder, not the exe's own
+        # directory, so don't use os.path.dirname(sys.executable) here.
+        base = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bin_dir = os.path.join(base, "bin")
+    return bin_dir if os.path.isdir(bin_dir) else None
+
+
 def find_ffmpeg():
-    """Return a directory containing ffmpeg.exe, or None if not found on PATH."""
+    """Return a directory containing ffmpeg.exe: a bundled copy shipped
+    next to the app takes priority, otherwise fall back to PATH."""
+    bin_dir = _bundled_bin_dir()
+    if bin_dir and os.path.isfile(os.path.join(bin_dir, "ffmpeg.exe")):
+        return bin_dir
     path = shutil.which("ffmpeg")
     if path:
         return os.path.dirname(path)
     return None
 
 
+def _js_runtimes_opt():
+    node_path = find_node()
+    return {"deno": {}, "node": {"path": node_path} if node_path else {}}
+
+
 def find_node():
-    """Return True if a node.js runtime is available on PATH.
+    """Return the path to a node.js executable to use (bundled copy
+    preferred), or None if none is available anywhere.
 
     YouTube requires solving a JS "n challenge" to get working download
     URLs; yt-dlp needs a JS runtime (node) for this, plus permission to
     fetch its challenge-solver script (see remote_components below)."""
-    return shutil.which("node") is not None
+    bin_dir = _bundled_bin_dir()
+    if bin_dir:
+        bundled = os.path.join(bin_dir, "node.exe")
+        if os.path.isfile(bundled):
+            return bundled
+    return shutil.which("node")
 
 
 POSTPROCESSOR_LABELS = {
@@ -68,7 +98,7 @@ class Downloader:
             "no_warnings": True,
             "skip_download": True,
             "extract_flat": "in_playlist",
-            "js_runtimes": {"deno": {}, "node": {}},
+            "js_runtimes": _js_runtimes_opt(),
             "remote_components": ["ejs:github"],
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -131,7 +161,7 @@ class Downloader:
             "restrictfilenames": False,
             "windowsfilenames": True,
             "ignoreerrors": is_playlist,
-            "js_runtimes": {"deno": {}, "node": {}},
+            "js_runtimes": _js_runtimes_opt(),
             "remote_components": ["ejs:github"],
         }
         if ffmpeg_dir:
